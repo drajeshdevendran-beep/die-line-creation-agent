@@ -1,0 +1,151 @@
+"""FastAPI web application for die-line creation."""
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from src.die_line_agent import generate_die_line
+from src.ai_agent import parse_packaging_brief
+from src.exporters import DieLinePDFExporter, DieLineSVGExporter
+
+
+app = FastAPI(
+    title="Die Line Creation Agent",
+    description="AI-powered packaging die-line generator",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class DieLineRequest(BaseModel):
+    product_name: str
+    width_mm: float
+    height_mm: float
+    depth_mm: float
+    style: str = "box"
+    material: str = "paperboard"
+
+
+class AIBriefRequest(BaseModel):
+    prompt: str
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    with open("web/templates/index.html", "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+
+@app.post("/api/generate")
+async def generate_die_line_api(request: DieLineRequest):
+    try:
+        spec = generate_die_line(
+            product_name=request.product_name,
+            width_mm=request.width_mm,
+            height_mm=request.height_mm,
+            depth_mm=request.depth_mm,
+            style=request.style,
+            material=request.material,
+        )
+        return JSONResponse(content=spec)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/generate-from-brief")
+async def generate_from_brief(request: AIBriefRequest):
+    try:
+        brief = parse_packaging_brief(request.prompt)
+        spec = generate_die_line(
+            product_name=brief.product_name,
+            width_mm=brief.width_mm,
+            height_mm=brief.height_mm,
+            depth_mm=brief.depth_mm,
+            style=brief.style,
+            material=brief.material,
+        )
+        spec['ai_notes'] = brief.special_notes
+        return JSONResponse(content=spec)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/export-pdf")
+async def export_pdf(request: DieLineRequest):
+    try:
+        spec = generate_die_line(
+            product_name=request.product_name,
+            width_mm=request.width_mm,
+            height_mm=request.height_mm,
+            depth_mm=request.depth_mm,
+            style=request.style,
+            material=request.material,
+        )
+        exporter = DieLinePDFExporter(spec)
+        pdf_buffer = exporter.export()
+        return FileResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            filename=f"{request.product_name.replace(' ', '_')}_dieeline.pdf",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/export-svg")
+async def export_svg(request: DieLineRequest):
+    try:
+        spec = generate_die_line(
+            product_name=request.product_name,
+            width_mm=request.width_mm,
+            height_mm=request.height_mm,
+            depth_mm=request.depth_mm,
+            style=request.style,
+            material=request.material,
+        )
+        exporter = DieLineSVGExporter(spec)
+        svg_content = exporter.export()
+        return FileResponse(
+            __import__('io').BytesIO(svg_content.encode('utf-8')),
+            media_type="image/svg+xml",
+            filename=f"{request.product_name.replace(' ', '_')}_dieeline.svg",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/styles")
+async def get_styles():
+    return {
+        "styles": [
+            {"value": "box", "label": "Box / Folding Carton"},
+            {"value": "sleeve", "label": "Sleeve / Wrap"},
+            {"value": "tuck", "label": "Tuck-End"},
+            {"value": "pouch", "label": "Pouch"},
+        ]
+    }
+
+
+@app.get("/api/materials")
+async def get_materials():
+    return {
+        "materials": [
+            {"value": "paperboard", "label": "Paperboard"},
+            {"value": "kraft", "label": "Kraft"},
+            {"value": "corrugated", "label": "Corrugated"},
+            {"value": "folding_carton", "label": "White Board"},
+        ]
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
